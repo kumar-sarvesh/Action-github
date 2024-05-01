@@ -1,14 +1,16 @@
-name: Push the Docker image to AWS ECR Repo
+name: Build and Deploy Docker Image
+
 on:
   push:
     branches:
       - main
+
 jobs:
-  Build:
-    name: Build
+  build:
+    name: Build and Push to ECR
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v2
 
       - name: Configure AWS credentials
@@ -30,18 +32,32 @@ jobs:
         id: get-timestamp
         run: echo "::set-output name=timestamp::$(date +'%Y-%m-%d-%H-%M')"
 
-      - name: Get commit message
-        id: get-commit-message
-        run: echo "::set-output name=commit-message::$(git log --format=%B -n 1 HEAD)"
-
       - name: Build, tag, and push the image to Amazon ECR
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.REPO_NAME }}
           IMAGE_TAG: ${{ steps.get-commit-hash.outputs.commit-hash }}-${{ steps.get-timestamp.outputs.timestamp }}
-          COMMIT_MESSAGE: ${{ steps.get-commit-message.outputs.commit-message }}
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "Commit message: $COMMIT_MESSAGE"
+
+  deploy:
+    name: Deploy from ECR to EC2
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: SSH into EC2 and deploy latest image
+        uses: appleboy/ssh-action@master
+        with:
+          host: ec2-3-86-102-151.compute-1.amazonaws.com
+          username: ec2-user
+          key: ${{ secrets.ACTIONS_PRIVATE_KEY }}
+          envs: GITHUB_SHA ECR_REGISTRY ECR_REPOSITORY IMAGE_TAG
+          script: |
+            echo "Deployment started at $(date)"
+            docker pull $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+            docker stop your_container_name || true
+            docker rm your_container_name || true
+            docker run -d --restart always --name your_container_name -p 8080:80 $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+            echo "Deployment completed at $(date)"
